@@ -1,0 +1,101 @@
+WITH address AS (
+  SELECT FROM_HEX(LOWER(REPLACE('{{wallet address:}}', '0x', ''))) AS addr
+),
+
+-- Top-level Transactions on Base
+top_level_tx AS (
+  SELECT
+    DATE_TRUNC('day', block_time) AS day,
+    COUNT(*) AS tx_count
+  FROM base.transactions, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- Internal Transactions on Base
+internal_tx AS (
+  SELECT
+    DATE_TRUNC('day', block_time) AS day,
+    COUNT(*) AS internal_count
+  FROM base.traces, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- ERC-20 Transfers on Base
+erc20_tx AS (
+  SELECT
+    DATE_TRUNC('day', evt_block_time) AS day,
+    COUNT(*) AS erc20_transfer_count
+  FROM erc20_base.evt_Transfer, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- ERC-721 Transfers on Base
+erc721_tx AS (
+  SELECT
+    DATE_TRUNC('day', evt_block_time) AS day,
+    COUNT(*) AS erc721_transfer_count
+  FROM erc721_base.evt_Transfer, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- ERC-1155 Single Transfers on Base
+erc1155_single_tx AS (
+  SELECT
+    DATE_TRUNC('day', evt_block_time) AS day,
+    COUNT(*) AS erc1155_single_count
+  FROM erc1155_base.evt_TransferSingle, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- ERC-1155 Batch Transfers on Base
+erc1155_batch_tx AS (
+  SELECT
+    DATE_TRUNC('day', evt_block_time) AS day,
+    COUNT(*) AS erc1155_batch_count
+  FROM erc1155_base.evt_TransferBatch, address
+  WHERE "from" = addr OR "to" = addr
+  GROUP BY 1
+),
+
+-- Merge all by day
+combined AS (
+  SELECT
+    COALESCE(t.day, i.day, e20.day, e721.day, e1155s.day, e1155b.day) AS day,
+    COALESCE(tx_count, 0) AS tx_count,
+    COALESCE(internal_count, 0) AS internal_count,
+    COALESCE(erc20_transfer_count, 0) AS erc20_transfer_count,
+    COALESCE(erc721_transfer_count, 0) AS erc721_transfer_count,
+    COALESCE(erc1155_single_count, 0) AS erc1155_single_count,
+    COALESCE(erc1155_batch_count, 0) AS erc1155_batch_count
+  FROM top_level_tx t
+  FULL OUTER JOIN internal_tx i ON t.day = i.day
+  FULL OUTER JOIN erc20_tx e20 ON COALESCE(t.day, i.day) = e20.day
+  FULL OUTER JOIN erc721_tx e721 ON COALESCE(t.day, i.day, e20.day) = e721.day
+  FULL OUTER JOIN erc1155_single_tx e1155s ON COALESCE(t.day, i.day, e20.day, e721.day) = e1155s.day
+  FULL OUTER JOIN erc1155_batch_tx e1155b ON COALESCE(t.day, i.day, e20.day, e721.day, e1155s.day) = e1155b.day
+)
+
+SELECT
+  day,
+  tx_count,
+  internal_count,
+  erc20_transfer_count,
+  erc721_transfer_count,
+  (erc1155_single_count + erc1155_batch_count) AS erc1155_transfer_count,
+  SUM(tx_count) OVER (ORDER BY day) AS cum_tx,
+  SUM(internal_count) OVER (ORDER BY day) AS cum_internal,
+  SUM(erc20_transfer_count) OVER (ORDER BY day) AS cum_erc20,
+  SUM(erc721_transfer_count) OVER (ORDER BY day) AS cum_erc721,
+  SUM(erc1155_single_count + erc1155_batch_count) OVER (ORDER BY day) AS cum_erc1155,
+
+(tx_count + internal_count + erc20_transfer_count + erc721_transfer_count + erc1155_single_count + erc1155_batch_count) AS total_transaction_count,
+  SUM(
+    tx_count + internal_count + erc20_transfer_count + erc721_transfer_count + erc1155_single_count + erc1155_batch_count
+  ) OVER (ORDER BY day) AS cum_total_transaction_count
+FROM combined
+ORDER BY day;
