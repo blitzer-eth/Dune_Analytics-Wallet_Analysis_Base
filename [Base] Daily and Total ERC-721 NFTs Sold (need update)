@@ -1,0 +1,19 @@
+WITH address AS (
+  SELECT FROM_HEX(LOWER(REPLACE('{{wallet address:}}', '0x', ''))) AS addr
+),
+
+nfts_sold AS (
+  SELECT
+    DATE_TRUNC('day', evt_block_time) AS day,
+    COUNT(*) AS nfts_sold_daily
+  FROM erc721_base.evt_Transfer, address
+  WHERE "from" = addr
+  GROUP BY 1
+)
+
+SELECT
+  DATE_FORMAT(day, '%m/%d') AS date,
+  nfts_sold_daily,
+  SUM(nfts_sold_daily) OVER (ORDER BY day) AS nfts_sold_total
+FROM nfts_sold
+ORDER BY day;
